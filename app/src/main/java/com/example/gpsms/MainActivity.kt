@@ -16,11 +16,9 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import com.google.android.gms.location.*
-import java.io.PrintWriter
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
-import java.net.Socket
 import java.text.SimpleDateFormat
 import java.util.*
 
@@ -30,11 +28,9 @@ class MainActivity : AppCompatActivity() {
     // Location client and callback for receiving updates.
     private lateinit var fusedLocationClient: FusedLocationProviderClient
     private lateinit var locationCallback: LocationCallback
-    private lateinit var handler: Handler
 
-    // Counter to ensure we send only one message per activation.
-    private var counter = 0
-    private var permissionRequestedOnce = false
+    // Handler for scheduling tasks.
+    private lateinit var handler: Handler
 
     // Spinner for selecting a destination IP from a predefined list.
     private lateinit var ipSpinner: Spinner
@@ -43,9 +39,11 @@ class MainActivity : AppCompatActivity() {
     // TextView to display the message that was sent.
     private lateinit var messageTextView: TextView
 
-    // Fixed port values for TCP and UDP communication.
-    private val TCP_PORT = 6060
+    // Fixed UDP port for communication.
     private val UDP_PORT = 777
+
+    // Toggle state for tracking.
+    private var isTracking = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -55,26 +53,34 @@ class MainActivity : AppCompatActivity() {
         ipSpinner = findViewById(R.id.ipSpinner)
         messageTextView = findViewById(R.id.messageTextView)
         ipAddressList = resources.getStringArray(R.array.ip_addresses)
-
-        // Set up the spinner adapter with the predefined IP addresses.
         val adapter = ArrayAdapter(this, android.R.layout.simple_spinner_item, ipAddressList)
         adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
         ipSpinner.adapter = adapter
 
-        val startTrackingButton: Button = findViewById(R.id.startTrackingButton)
+        val toggleTrackingButton: Button = findViewById(R.id.startTrackingButton)
         fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
         handler = Handler(Looper.getMainLooper())
 
-        // Request necessary permissions.
+        // Request necessary location permissions.
         requestPermissions()
 
-        startTrackingButton.setOnClickListener {
-            if (checkPermissions()) {
-                // Start location updates immediately on button press.
-                startLocationUpdates()
+        // Set the toggle button text based on the tracking state.
+        toggleTrackingButton.text = "Iniciar Rastreo"
+
+        // Toggle tracking when the button is pressed.
+        toggleTrackingButton.setOnClickListener {
+            if (isTracking) {
+                stopLocationUpdates()
+                toggleTrackingButton.text = "Iniciar Rastreo"
             } else {
-                requestPermissions()
+                if (checkPermissions()) {
+                    startLocationUpdates()
+                    toggleTrackingButton.text = "Detener Rastreo"
+                } else {
+                    requestPermissions()
+                }
             }
+            isTracking = !isTracking
         }
     }
 
@@ -101,30 +107,22 @@ class MainActivity : AppCompatActivity() {
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode == 101) {
-            when {
-                grantResults.isNotEmpty() && grantResults.all { it == PackageManager.PERMISSION_GRANTED } -> {
-                    Toast.makeText(this, "Permisos concedidos", Toast.LENGTH_SHORT).show()
-                }
-                !permissionRequestedOnce -> {
-                    permissionRequestedOnce = true
-                    Toast.makeText(this, "Permisos necesarios para la app. Vuelve a intentarlo.", Toast.LENGTH_LONG).show()
-                    requestPermissions()
-                }
-                else -> {
-                    Toast.makeText(this, "Permisos denegados. No se puede continuar.", Toast.LENGTH_LONG).show()
-                }
+            if (grantResults.isNotEmpty() && grantResults.all { it == PackageManager.PERMISSION_GRANTED }) {
+                Toast.makeText(this, "Permisos concedidos", Toast.LENGTH_SHORT).show()
+            } else {
+                Toast.makeText(this, "Permisos denegados. No se puede continuar.", Toast.LENGTH_LONG).show()
             }
         }
     }
 
-    // Check if location services are enabled on the device.
+    // Check if location services are enabled.
     private fun isLocationEnabled(): Boolean {
         val locationManager = getSystemService(Context.LOCATION_SERVICE) as LocationManager
         return locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER) ||
                 locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)
     }
 
-    // Start receiving location updates immediately.
+    // Start receiving location updates with a 10-second interval.
     private fun startLocationUpdates() {
         if (!isLocationEnabled()) {
             Toast.makeText(this, "La ubicación está desactivada. Actívela para continuar.", Toast.LENGTH_LONG).show()
@@ -132,8 +130,8 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
-        // Create a location request using the new Builder (priority high accuracy).
-        val locationRequest = LocationRequest.Builder(0L).apply {
+        // Create a LocationRequest with a 10-second interval.
+        val locationRequest = LocationRequest.Builder(10000L).apply {
             setPriority(LocationRequest.PRIORITY_HIGH_ACCURACY)
         }.build()
 
@@ -143,30 +141,23 @@ class MainActivity : AppCompatActivity() {
                 // Use the most recent location update.
                 locationResult.lastLocation?.let { location ->
                     sendMessageWithLocation(location)
-                    // Stop location updates immediately after sending the message.
-                    stopLocationUpdates()
                 }
             }
         }
 
+        // Check for permission again.
         if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
             return
         }
 
-        // Request location updates.
+        // Start location updates. These will trigger every 10 seconds.
         fusedLocationClient.requestLocationUpdates(locationRequest, locationCallback, Looper.getMainLooper())
-
         Toast.makeText(this, "Rastreo iniciado", Toast.LENGTH_SHORT).show()
-        // Reset the counter to allow one message to be sent.
-        counter = 0
     }
 
-    // Build the message with location data and send it via TCP and UDP.
+    // Build the message with location data and send it via UDP.
     private fun sendMessageWithLocation(location: Location) {
-        // Ensure that we only send one message per activation.
-        if (counter >= 1) return
-
-        // Format the current time using the location's timestamp.
+        // Format the location timestamp.
         val formattedTime = SimpleDateFormat("HH:mm:ss - dd-MM-yyyy", Locale.getDefault()).format(Date(location.time))
 
         // Build the message string with location details.
@@ -184,16 +175,13 @@ class MainActivity : AppCompatActivity() {
         // Get the selected destination IP from the spinner.
         val selectedIp = ipSpinner.selectedItem.toString()
 
-        // Send the message via TCP and UDP using fixed port constants.
-        sendTCPMessage(message, selectedIp, TCP_PORT)
+        // Send the message via UDP using the fixed port.
         sendUDPMessage(message, selectedIp, UDP_PORT)
 
-        // Update the TextView to display the sent message.
+        // Update the TextView on the UI thread to display the sent message.
         runOnUiThread {
             messageTextView.text = message
         }
-
-        counter++
     }
 
     // Stop receiving location updates.
@@ -206,11 +194,17 @@ class MainActivity : AppCompatActivity() {
     private fun sendUDPMessage(message: String, ip: String, port: Int) {
         Thread {
             try {
+                // Create a new DatagramSocket.
                 val datagramSocket = DatagramSocket()
+                // Convert the message to bytes.
                 val buffer = message.toByteArray(Charsets.UTF_8)
+                // Get the InetAddress object for the destination IP.
                 val address = InetAddress.getByName(ip)
+                // Create a DatagramPacket with the message, destination address, and port.
                 val packet = DatagramPacket(buffer, buffer.size, address, port)
+                // Send the UDP packet.
                 datagramSocket.send(packet)
+                // Close the socket to release resources.
                 datagramSocket.close()
                 runOnUiThread {
                     Toast.makeText(this, "Mensaje UDP enviado", Toast.LENGTH_SHORT).show()
@@ -219,37 +213,6 @@ class MainActivity : AppCompatActivity() {
                 e.printStackTrace()
                 runOnUiThread {
                     Toast.makeText(this, "Error en UDP: ${e.message}", Toast.LENGTH_LONG).show()
-                }
-            }
-        }.start()
-    }
-
-    // Send a message via TCP in a separate thread.
-    private fun sendTCPMessage(message: String, ip: String, port: Int) {
-        Thread {
-            try {
-                val socket = Socket(ip, port)
-                val outputStream = socket.getOutputStream()
-                val writer = PrintWriter(outputStream, true)
-                writer.println(message)
-                writer.flush()  // Ensure all data is sent
-
-                // Initiate a graceful shutdown of the output stream
-                socket.shutdownOutput()
-
-                // Optionally, wait a short moment for the remote to acknowledge (if needed)
-                Thread.sleep(100)
-
-                writer.close()
-                socket.close()
-
-                runOnUiThread {
-                    Toast.makeText(this, "Mensaje TCP enviado", Toast.LENGTH_SHORT).show()
-                }
-            } catch (e: Exception) {
-                e.printStackTrace()
-                runOnUiThread {
-                    Toast.makeText(this, "Error en TCP: ${e.message}", Toast.LENGTH_LONG).show()
                 }
             }
         }.start()
