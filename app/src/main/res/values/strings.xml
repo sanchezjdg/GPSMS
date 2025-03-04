@@ -1,8 +1,27 @@
 <resources>
-    <string name="app_name">GPSMS</string>
-    <string-array name="ip_addresses">
-        <item>eeutria77.ddns.net</item>
-        <item>juanfe.ddns.net</item>
-        <item>samirr199.ddns.net</item>
-    </string-array>
+<!-- Application name -->
+<string name="app_name">GPSMS</string>
+
+<!-- Button Labels -->
+<string name="iniciar_rastreo">Iniciar Rastreo</string>
+<string name="detener_rastreo">Detener Rastreo</string>
+
+<!-- Permission messages -->
+<string name="permisos_concedidos">Permisos concedidos</string>
+<string name="permisos_denegados">Permisos denegados. No se puede continuar.</string>
+
+<!-- Location status messages -->
+<string name="ubicacion_desactivada">La ubicación está desactivada. Actívela para continuar.</string>
+<string name="rastreo_iniciado">Rastreo iniciado</string>
+<string name="rastreo_finalizado">Rastreo finalizado</string>
+
+<!-- UDP send confirmation message; %1$s will be replaced by the destination IP -->
+<string name="mensaje_udp_enviado">Mensaje UDP enviado a %1$s</string>
+
+<!-- Fixed DNS/IP addresses that the app sends messages to -->
+<string-array name="ip_addresses">
+    <item>eeutria77.ddns.net</item>
+    <item>juanfe.ddns.net</item>
+    <item>samirr199.ddns.net</item>
+</string-array>
 </resources>
