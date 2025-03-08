@@ -15,8 +15,11 @@
 <string name="rastreo_iniciado">Rastreo iniciado</string>
 <string name="rastreo_finalizado">Rastreo finalizado</string>
 
-<!-- UDP send confirmation message; %1$s will be replaced by the destination IP -->
-<string name="mensaje_udp_enviado">Mensaje UDP enviado a %1$s</string>
+<!-- UDP send confirmation message -->
+<string name="mensaje_udp_enviado">Mensaje UDP enviado</string>
+
+<!-- Tracking your location messages -->
+<string name="rastreo_activo">Rastreo GPS activo</string>
 
 <!-- Fixed DNS/IP addresses that the app sends messages to -->
 <string-array name="ip_addresses">
