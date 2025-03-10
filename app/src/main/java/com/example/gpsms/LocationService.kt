@@ -25,7 +25,7 @@ class LocationService : Service() {
     private lateinit var notificationBuilder: NotificationCompat.Builder
 
     // Fixed UDP port value for communication
-    private val udpPort = 777
+    private val udpPort = 7777
 
     // Array of fixed destination DNS/IP addresses
     private lateinit var ipAddressList: Array<String>
@@ -143,7 +143,6 @@ class LocationService : Service() {
         val message = """
             |Latitud: ${location.latitude}
             |Longitud: ${location.longitude}
-            |Altitud: ${location.altitude}
             |Tiempo: $formattedTime
         """.trimMargin()
 
