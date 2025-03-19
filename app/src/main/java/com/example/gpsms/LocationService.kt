@@ -1,7 +1,6 @@
 package com.example.gpsms
 
 import android.app.*
-import android.content.Context
 import android.content.Intent
 import android.location.Location
 import android.os.Build
@@ -44,7 +43,7 @@ class LocationService : Service() {
         super.onCreate()
         fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
         ipAddressList = resources.getStringArray(R.array.ip_addresses)
-        notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        notificationManager = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
 
         // Define location callback
         locationCallback = object : LocationCallback() {
@@ -141,8 +140,8 @@ class LocationService : Service() {
 
         // Construct the message string
         val message = """
-            |Latitud: ${location.latitude}
-            |Longitud: ${location.longitude}
+            |Latitud: ${"%.5f".format(location.latitude)}
+            |Longitud: ${"%.5f".format(location.longitude)}
             |Tiempo: $formattedTime
         """.trimMargin()
 

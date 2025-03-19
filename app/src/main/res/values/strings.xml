@@ -23,10 +23,10 @@
 
 <!-- Fixed DNS/IP addresses that the app sends messages to -->
 <string-array name="ip_addresses">
-    <item>sanchezjdg.duckdns.org</item>
+    <item>artemisdavid.ip-ddns.com</item>
     <item>artemis-s9.ddns.net</item>
-    <item>artemisa-may.ddns.net</item>
-    <item>eeutria.ddns.net</item>
-    <item>juanfe1098.ddns.net</item>
+    <item>artemismay.ip-ddns.com</item>
+    <item>artemisedwin.ip-ddns.com</item>
+    <item>artemisfelipe1.ip-ddns.com</item>
 </string-array>
 </resources>
