@@ -17,6 +17,10 @@ import androidx.annotation.RequiresApi
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import android.view.View
+import android.widget.Spinner
+import android.widget.ArrayAdapter
+import android.widget.AdapterView
 
 class MainActivity : AppCompatActivity() {
 
@@ -52,6 +56,27 @@ class MainActivity : AppCompatActivity() {
 
         messageTextView = findViewById(R.id.messageTextView)
         val toggleTrackingButton: Button = findViewById(R.id.startTrackingButton)
+
+        // Spinner for vehicle id
+        val spinner: Spinner = findViewById(R.id.spinner_vehicle)
+        ArrayAdapter.createFromResource(
+            this,
+            R.array.vehicle_ids,
+            android.R.layout.simple_spinner_item
+        ).also { adapter ->
+            adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+            spinner.adapter = adapter
+        }
+
+        // Restore last selection or default to "1"
+        val prefs = getSharedPreferences("gps_prefs", MODE_PRIVATE)
+        spinner.setSelection(prefs.getInt("vehicle_id", 1) - 1)
+        spinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: AdapterView<*>, view: View?, pos: Int, id: Long) {
+                prefs.edit().putInt("vehicle_id", parent.getItemAtPosition(pos).toString().toInt()).apply()
+            }
+            override fun onNothingSelected(parent: AdapterView<*>) { /* no-op */ }
+        }
 
         // Request necessary location permissions
         requestPermissions()

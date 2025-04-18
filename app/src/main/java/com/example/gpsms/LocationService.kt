@@ -137,12 +137,15 @@ class LocationService : Service() {
     // Build the message with location data and send it via UDP to all fixed IPs
     private fun sendMessageWithLocation(location: Location) {
         val formattedTime = SimpleDateFormat("HH:mm:ss - dd-MM-yyyy", Locale.getDefault()).format(Date(location.time))
+        val prefs = getSharedPreferences("gps_prefs", MODE_PRIVATE)
+        val vehicleId = prefs.getInt("vehicle_id", 1)
 
         // Construct the message string
         val message = """
             |Latitud: ${"%.5f".format(location.latitude)}
             |Longitud: ${"%.5f".format(location.longitude)}
             |Tiempo: $formattedTime
+            |Vehiculo: $vehicleId
         """.trimMargin()
 
         Log.d("MSG_DEBUG", "Enviando mensaje: $message")
