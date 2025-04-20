@@ -1,90 +1,136 @@
 package com.example.gpsms
 
 import android.Manifest
-import android.content.BroadcastReceiver
-import android.content.Context
-import android.content.Intent
-import android.content.IntentFilter
+import android.bluetooth.BluetoothSocket
+import android.content.*
 import android.content.pm.PackageManager
 import android.location.LocationManager
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
-import android.widget.Button
-import android.widget.TextView
-import android.widget.Toast
+import android.view.View
+import android.widget.*
 import androidx.annotation.RequiresApi
+import androidx.annotation.RequiresPermission
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
-import android.view.View
-import android.widget.Spinner
-import android.widget.ArrayAdapter
-import android.widget.AdapterView
+import kotlinx.coroutines.*
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.isActive
 
 class MainActivity : AppCompatActivity() {
 
-    // TextView to display the sent message
+    // --- UI Elements ---
     private lateinit var messageTextView: TextView
+    private lateinit var spinnerVehicle: Spinner
+    private lateinit var spinnerDevices: Spinner
+    private lateinit var toggleTrackingButton: Button
+    private lateinit var btnConnectOBD: Button
+    private lateinit var tvRPM: TextView
 
-    // Toggle state for tracking
+    // --- State ---
     private var isTracking = false
+    private var obdJob: Job? = null
+    private var obdSocket: BluetoothSocket? = null
 
-    // BroadcastReceiver for location updates
+    // --- Bluetooth and OBD Managers ---
+    private lateinit var btHelper: BluetoothHelper
+    private lateinit var obdManager: OBDManager
+
+    // --- Permissions for Bluetooth ---
+    @RequiresApi(Build.VERSION_CODES.S)
+    private val bluetoothPermissions = arrayOf(
+        Manifest.permission.BLUETOOTH_CONNECT,
+        Manifest.permission.ACCESS_FINE_LOCATION
+    )
+    private val bluetoothPermissionRequestCode = 1001
+
+    @RequiresApi(Build.VERSION_CODES.S)
+    private fun hasBluetoothPermissions(): Boolean {
+        return bluetoothPermissions.all {
+            ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED
+        }
+    }
+
+    @RequiresApi(Build.VERSION_CODES.S)
+    private fun requestBluetoothPermissions() {
+        ActivityCompat.requestPermissions(this, bluetoothPermissions, bluetoothPermissionRequestCode)
+    }
+
+
+    // --- Broadcast receiver for location updates ---
     private val locationUpdateReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             if (intent?.action == LocationService.LOCATION_UPDATE_ACTION) {
-                // Update TextView with location message
-                val locationMessage = intent.getStringExtra(LocationService.EXTRA_LOCATION_MESSAGE)
-                if (!locationMessage.isNullOrEmpty()) {
-                    messageTextView.text = locationMessage
+                intent.getStringExtra(LocationService.EXTRA_LOCATION_MESSAGE)?.let {
+                    messageTextView.text = it
                 }
-
-                // Show toast if there's a toast message
-                val toastMessage = intent.getStringExtra(LocationService.EXTRA_TOAST_MESSAGE)
-                if (!toastMessage.isNullOrEmpty()) {
-                    Toast.makeText(context, toastMessage, Toast.LENGTH_SHORT).show()
+                intent.getStringExtra(LocationService.EXTRA_TOAST_MESSAGE)?.let {
+                    Toast.makeText(context, it, Toast.LENGTH_SHORT).show()
                 }
             }
         }
     }
 
-    @RequiresApi(Build.VERSION_CODES.O)
+    @RequiresApi(Build.VERSION_CODES.S)
+    @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
-        messageTextView = findViewById(R.id.messageTextView)
-        val toggleTrackingButton: Button = findViewById(R.id.startTrackingButton)
 
-        // Spinner for vehicle id
-        val spinner: Spinner = findViewById(R.id.spinner_vehicle)
+        // --- Bind UI ---
+        messageTextView = findViewById(R.id.messageTextView)
+        spinnerVehicle = findViewById(R.id.spinner_vehicle)
+        spinnerDevices = findViewById(R.id.spinnerDevices)
+        toggleTrackingButton = findViewById(R.id.startTrackingButton)
+        btnConnectOBD = findViewById(R.id.btnConnectOBD)
+        tvRPM = findViewById(R.id.tvRPM)
+
+        // --- Vehicle Spinner setup ---
         ArrayAdapter.createFromResource(
             this,
             R.array.vehicle_ids,
             android.R.layout.simple_spinner_item
         ).also { adapter ->
             adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
-            spinner.adapter = adapter
+            spinnerVehicle.adapter = adapter
         }
 
-        // Restore last selection or default to "1"
         val prefs = getSharedPreferences("gps_prefs", MODE_PRIVATE)
-        spinner.setSelection(prefs.getInt("vehicle_id", 1) - 1)
-        spinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
-            override fun onItemSelected(parent: AdapterView<*>, view: View?, pos: Int, id: Long) {
-                prefs.edit().putInt("vehicle_id", parent.getItemAtPosition(pos).toString().toInt()).apply()
+        spinnerVehicle.setSelection(prefs.getInt("vehicle_id", 1) - 1)
+        spinnerVehicle.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: AdapterView<*>, view: View?, position: Int, id: Long) {
+                val selectedId = parent.getItemAtPosition(position).toString().toInt()
+                prefs.edit().putInt("vehicle_id", selectedId).apply()
             }
-            override fun onNothingSelected(parent: AdapterView<*>) { /* no-op */ }
+            override fun onNothingSelected(parent: AdapterView<*>) {}
         }
 
-        // Request necessary location permissions
+        // --- Permissions ---
         requestPermissions()
 
-        // Set initial button text from resources
-        toggleTrackingButton.text = getString(R.string.iniciar_rastreo)
+        if (!hasBluetoothPermissions()) {
+            requestBluetoothPermissions()
+            return
+        }
 
-        // Toggle tracking when the button is pressed
+        // --- Init OBD ---
+        btHelper = BluetoothHelper(this)
+        obdManager = OBDManager()
+
+        // --- Populate Bluetooth Devices ---
+        val pairedDevices = btHelper.getPairedDevices().toList()
+        val deviceNames = pairedDevices.map { it.name }
+        val adapter = ArrayAdapter(this, android.R.layout.simple_spinner_item, deviceNames)
+        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+        spinnerDevices.adapter = adapter
+
+        // --- GPS Toggle Button ---
+        toggleTrackingButton.text = getString(R.string.iniciar_rastreo)
         toggleTrackingButton.setOnClickListener {
             if (isTracking) {
                 stopLocationService()
@@ -105,62 +151,94 @@ class MainActivity : AppCompatActivity() {
             isTracking = !isTracking
         }
 
-        // Register receiver for location updates
-        registerReceiver(locationUpdateReceiver, IntentFilter(LocationService.LOCATION_UPDATE_ACTION),
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                Context.RECEIVER_EXPORTED
-            } else {
-                0
+        // --- Connect OBD Button ---
+        btnConnectOBD.setOnClickListener {
+            val idx = spinnerDevices.selectedItemPosition
+
+            if (idx == -1 || pairedDevices.isEmpty()) {
+                Toast.makeText(this, "No Bluetooth devices available", Toast.LENGTH_SHORT).show()
+                return@setOnClickListener
             }
+
+            val device = pairedDevices[idx]
+
+            CoroutineScope(Dispatchers.IO).launch {
+                val socket = btHelper.connect(device)
+                if (socket != null) {
+                    obdSocket = socket
+                    obdManager.setupELM(socket.inputStream, socket.outputStream)
+
+                    obdJob = launch {
+                        pollRPM() // CoroutineScope passed implicitly
+                    }
+
+                    withContext(Dispatchers.Main) {
+                        Toast.makeText(this@MainActivity, "OBD Connected", Toast.LENGTH_SHORT).show()
+                    }
+                } else {
+                    withContext(Dispatchers.Main) {
+                        Toast.makeText(this@MainActivity, "OBD Connection Failed", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            }
+        }
+
+        // --- Register location receiver ---
+        registerReceiver(
+            locationUpdateReceiver,
+            IntentFilter(LocationService.LOCATION_UPDATE_ACTION),
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) Context.RECEIVER_EXPORTED else 0
         )
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        // Unregister the receiver to prevent memory leaks
+        obdJob?.cancel()
+        btHelper.disconnect(obdSocket) // Close socket if connected
         try {
             unregisterReceiver(locationUpdateReceiver)
-        } catch (e: Exception) {
-            // Receiver might not be registered
+        } catch (_: Exception) {}
+    }
+
+    /**
+     * Polls RPM (PID 0x0C) continuously while coroutine is active
+     */
+    private suspend fun CoroutineScope.pollRPM() {
+        while (isActive) {
+            val rpm = obdManager.readPID(0x0C)
+            withContext(Dispatchers.Main) {
+                tvRPM.text = "RPM: $rpm"
+            }
+            delay(1000L)
         }
     }
 
-    // Check that the necessary location permissions are granted
+    /**
+     * Permission and service utilities
+     */
     private fun checkPermissions(): Boolean {
-        val backgroundLocationPermission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+        val fine = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
+        val coarse = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION)
+        val background = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q)
             ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_BACKGROUND_LOCATION)
-        } else {
-            PackageManager.PERMISSION_GRANTED
-        }
+        else PackageManager.PERMISSION_GRANTED
 
-        val fineLocationPermission = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
-        val coarseLocationPermission = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION)
-
-        return fineLocationPermission == PackageManager.PERMISSION_GRANTED &&
-                coarseLocationPermission == PackageManager.PERMISSION_GRANTED &&
-                backgroundLocationPermission == PackageManager.PERMISSION_GRANTED
+        return fine == PackageManager.PERMISSION_GRANTED &&
+                coarse == PackageManager.PERMISSION_GRANTED &&
+                background == PackageManager.PERMISSION_GRANTED
     }
 
-    // Request necessary location permissions
     private fun requestPermissions() {
         val permissions = mutableListOf(
             Manifest.permission.ACCESS_FINE_LOCATION,
             Manifest.permission.ACCESS_COARSE_LOCATION
         )
-
-        // For Android 10+ we need to request background location separately
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             permissions.add(Manifest.permission.ACCESS_BACKGROUND_LOCATION)
         }
-
-        ActivityCompat.requestPermissions(
-            this,
-            permissions.toTypedArray(),
-            101
-        )
+        ActivityCompat.requestPermissions(this, permissions.toTypedArray(), 101)
     }
 
-    // Handle the result of the permission request
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode == 101) {
@@ -172,33 +250,27 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // Check if location services are enabled
     private fun isLocationEnabled(): Boolean {
-        val locationManager = getSystemService(Context.LOCATION_SERVICE) as LocationManager
-        return locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER) ||
-                locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)
+        val lm = getSystemService(Context.LOCATION_SERVICE) as LocationManager
+        return lm.isProviderEnabled(LocationManager.GPS_PROVIDER) ||
+                lm.isProviderEnabled(LocationManager.NETWORK_PROVIDER)
     }
 
-    // Start the foreground location service
     private fun startLocationService() {
-        val intent = Intent(this, LocationService::class.java)
-        intent.action = LocationService.ACTION_START_LOCATION_SERVICE
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            startForegroundService(intent)
-        } else {
-            startService(intent)
+        val intent = Intent(this, LocationService::class.java).apply {
+            action = LocationService.ACTION_START_LOCATION_SERVICE
         }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(intent)
+        else startService(intent)
 
         Toast.makeText(this, getString(R.string.rastreo_iniciado), Toast.LENGTH_SHORT).show()
     }
 
-    // Stop the foreground location service
     private fun stopLocationService() {
-        val intent = Intent(this, LocationService::class.java)
-        intent.action = LocationService.ACTION_STOP_LOCATION_SERVICE
+        val intent = Intent(this, LocationService::class.java).apply {
+            action = LocationService.ACTION_STOP_LOCATION_SERVICE
+        }
         startService(intent)
-
         Toast.makeText(this, getString(R.string.rastreo_finalizado), Toast.LENGTH_SHORT).show()
     }
 }

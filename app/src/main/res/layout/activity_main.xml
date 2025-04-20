@@ -56,5 +56,35 @@
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_margin="16dp"/>
+
+    <!-- OBD‑II Adapter Selector -->
+    <Spinner
+        android:id="@+id/spinnerDevices"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="16dp"
+        android:spinnerMode="dropdown"
+        android:prompt="@string/select_obd_adapter" />
+
+    <!-- Connect to ELM327 -->
+    <Button
+        android:id="@+id/btnConnectOBD"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="12dp"
+        android:padding="12dp"
+        android:text="@string/connect_obd"
+        android:backgroundTint="@color/primary"
+        android:textColor="@color/white" />
+
+    <!-- Live Engine RPM Display -->
+    <TextView
+        android:id="@+id/tvRPM"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="16dp"
+        android:text="@string/rpm_label"
+        android:textSize="18sp" />
+
 </LinearLayout>
 

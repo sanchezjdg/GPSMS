@@ -29,4 +29,9 @@
     <item>artemisedwin.ip-ddns.com</item>
     <item>artemisfelipe1.ip-ddns.com</item>
 </string-array>
+
+<string name="select_obd_adapter">Selecciona adaptador OBD</string>
+<string name="connect_obd">Conectar OBD</string>
+<string name="rpm_label">RPM: --</string>
+
 </resources>
