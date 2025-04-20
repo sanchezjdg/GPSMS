@@ -29,11 +29,16 @@ class LocationService : Service() {
     // Array of fixed destination DNS/IP addresses
     private lateinit var ipAddressList: Array<String>
 
+    // Current RPM value
+    private var currentRPM: Int = 0
+
     companion object {
         private const val NOTIFICATION_ID = 12345
         private const val CHANNEL_ID = "location_channel"
         const val ACTION_START_LOCATION_SERVICE = "START_LOCATION_SERVICE"
         const val ACTION_STOP_LOCATION_SERVICE = "STOP_LOCATION_SERVICE"
+        const val ACTION_UPDATE_RPM = "UPDATE_RPM"
+        const val EXTRA_RPM_VALUE = "rpm_value"
         const val LOCATION_UPDATE_ACTION = "com.example.gpsms.LOCATION_UPDATE"
         const val EXTRA_LOCATION_MESSAGE = "location_message"
         const val EXTRA_TOAST_MESSAGE = "toast_message"
@@ -56,12 +61,24 @@ class LocationService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent?.action == ACTION_START_LOCATION_SERVICE) {
-            startLocationUpdates()
-        } else if (intent?.action == ACTION_STOP_LOCATION_SERVICE) {
-            stopLocationUpdates()
-            stopForeground(true)
-            stopSelf()
+        when (intent?.action) {
+            ACTION_START_LOCATION_SERVICE -> {
+                startLocationUpdates()
+            }
+            ACTION_STOP_LOCATION_SERVICE -> {
+                stopLocationUpdates()
+                stopForeground(true)
+                stopSelf()
+            }
+            ACTION_UPDATE_RPM -> {
+                // Update RPM value when received from MainActivity/OBDManager
+                intent.getIntExtra(EXTRA_RPM_VALUE, -1).let { rpm ->
+                    if (rpm >= 0) {
+                        currentRPM = rpm
+                        Log.d("RPM_DEBUG", "RPM updated to: $rpm")
+                    }
+                }
+            }
         }
         return START_STICKY
     }
@@ -140,18 +157,22 @@ class LocationService : Service() {
         val prefs = getSharedPreferences("gps_prefs", MODE_PRIVATE)
         val vehicleId = prefs.getInt("vehicle_id", 1)
 
+        // Include RPM in the message
+        val rpmText = if (currentRPM > 0) "$currentRPM" else "0"
+
         // Construct the message string
         val message = """
             |Latitud: ${"%.5f".format(location.latitude)}
             |Longitud: ${"%.5f".format(location.longitude)}
             |Tiempo: $formattedTime
             |Vehiculo: $vehicleId
+            |RPM: $rpmText
         """.trimMargin()
 
         Log.d("MSG_DEBUG", "Enviando mensaje: $message")
 
         // Update notification with the latest coordinates
-        val notificationText = "Lat: ${location.latitude}, Lon: ${location.longitude}"
+        val notificationText = "Lat: ${location.latitude}, Lon: ${location.longitude}, RPM: $rpmText"
         updateNotification(notificationText)
         sendBroadcastToActivity(message, getString(R.string.mensaje_udp_enviado))
 

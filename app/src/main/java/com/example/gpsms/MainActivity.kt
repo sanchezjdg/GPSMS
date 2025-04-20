@@ -208,10 +208,20 @@ class MainActivity : AppCompatActivity() {
             val rpm = obdManager.readPID(0x0C)
             withContext(Dispatchers.Main) {
                 tvRPM.text = "RPM: $rpm"
+
+                // Send RPM to LocationService if tracking is active
+                if (isTracking && rpm > 0) {
+                    val intent = Intent(this@MainActivity, LocationService::class.java).apply {
+                        action = LocationService.ACTION_UPDATE_RPM
+                        putExtra(LocationService.EXTRA_RPM_VALUE, rpm)
+                    }
+                    startService(intent)
+                }
             }
             delay(1000L)
         }
     }
+
 
     /**
      * Permission and service utilities

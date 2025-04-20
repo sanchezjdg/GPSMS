@@ -50,7 +50,7 @@ class BluetoothHelper(private val context: Context) {
 
     /**
      * Closes any open RFCOMM socket to clean up resources.
-     * Call this in onDestroy() to avoid resource leaks.
+     * avoid resource leaks.
      */
     fun disconnect(socket: BluetoothSocket?) {
         try {
