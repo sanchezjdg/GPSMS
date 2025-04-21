@@ -1,71 +1,73 @@
 package com.example.gpsms
 
-import java.io.InputStream               // For reading from ELM327
-import java.io.OutputStream              // For writing to ELM327
-import java.util.Locale                  // ← Required for String.format(Locale.US,…)
+import android.util.Log
+import java.io.InputStream
+import java.io.OutputStream
+import java.util.Locale
 
 class OBDManager {
     private lateinit var input: InputStream
     private lateinit var output: OutputStream
 
-    /**
-     * Initialize the ELM327 adapter with standard AT commands.
-     */
     fun setupELM(input: InputStream, output: OutputStream) {
         this.input = input
         this.output = output
-        sendCommand("ATZ")    // Reset device
-        sendCommand("ATE0")   // Echo off
-        sendCommand("ATL0")   // Linefeeds off
-        sendCommand("ATS0")   // Spaces off
-        sendCommand("ATH0")   // Headers off
-        sendCommand("ATSP0")  // Automatic protocol selection
+
+        sendCommand("ATZ")   // Reset
+        sendCommand("ATE0")  // Echo off
+        sendCommand("ATL0")  // Linefeeds off
+        sendCommand("ATS0")  // Spaces off
+        sendCommand("ATH0")  // Headers off
+        sendCommand("ATSP0") // Auto protocol
     }
 
-    /**
-     * Send a single AT or OBD command and consume the 'OK' echo.
-     */
-    private fun sendCommand(cmd: String) {
+    private fun sendCommand(cmd: String): String {
         val full = (cmd + "\r").toByteArray()
         output.write(full)
         output.flush()
-        readResponse()  // Discard the echo/OK
+        clearBuffer()
+        val response = readResponse()
+        Log.d("OBD", "Sent: $cmd | Response: $response")
+        return response
     }
 
-    /**
-     * Read raw response from ELM327.
-     */
+    private fun clearBuffer() {
+        while (input.available() > 0) {
+            input.read()
+        }
+    }
+
     private fun readResponse(): String {
         val buffer = ByteArray(1024)
         val len = input.read(buffer)
         return String(buffer, 0, len).trim()
     }
 
-    /**
-     * Send a PID request (e.g. 0x0C for RPM), parse and convert to integer.
-     * Supports Engine RPM as (A*256 + B)/4.
-     */
     fun readPID(pidHex: Int): Int {
-        // Format PID as two‑digit hex
         val pid = String.format(Locale.US, "%02X", pidHex)
-        // Write request: '01 <PID>'
-        output.write(("01$pid\r").toByteArray())
-        output.flush()
+        val command = "01$pid"
+        val response = sendCommand(command)
 
-        // Example response: "41 0C 1A F8"
-        val resp = readResponse()
-        val parts = resp.split(" ").filter { it.isNotEmpty() }
-
-        // Check header (0x41) and matching PID
-        if (parts.size >= 4 && parts[0] == "41" && parts[1] == pid) {
-            val A = parts[2].toInt(16)
-            val B = parts[3].toInt(16)
-            return when (pidHex) {
-                0x0C -> (A * 256 + B) / 4  // Engine RPM formula
-                else -> A                  // Default: return A for single‑byte sensors
-            }
+        if (response.contains("NO DATA") || response.isEmpty()) {
+            Log.e("OBD", "No data received for PID $pid")
+            return -1
         }
-        // Fallback on parse error
-        return -1
+
+        val parts = response.split(" ").filter { it.isNotEmpty() }
+
+        if (parts.size < 4 || parts[0] != "41" || parts[1] != pid) {
+            Log.e("OBD", "Invalid response for PID $pid: $response")
+            return -1
+        }
+
+        val A = parts[2].toInt(16)
+        val B = parts[3].toInt(16)
+
+        return when (pidHex) {
+            0x0C -> (A * 256 + B) / 4  // RPM
+            0x0D -> A                 // Speed (km/h)
+            else -> A
+        }
     }
 }
+
