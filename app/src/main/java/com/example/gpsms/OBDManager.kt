@@ -14,278 +14,182 @@ class OBDManager {
     private lateinit var output: OutputStream
     private val TAG = "OBDManager"
 
+    // Initialize flag to track if ELM has been set up
     private var isInitialized = false
-    private var adapterType = "Unknown" // To track adapter type
 
+    /**
+     * Sets up the ELM327 adapter with standard AT commands,
+     * verifies the protocol (ATDP), and forces CAN if necessary.
+     */
     suspend fun setupELM(input: InputStream, output: OutputStream): Boolean {
         this.input = input
         this.output = output
 
         try {
-            // Important: Give hardware time to stabilize after BT connection
-            delay(2000)
-            clearBuffer()
+            // Allow adapter startup
+            delay(1500)
 
-            // Try with a more lenient approach - just send reset and check for ANY response
-            Log.d(TAG, "Sending initial reset command")
-            val resetResponse = sendCommandWithRetry("ATZ", 3)
+            // Reset adapter
+            val resetResp = sendCommand("ATZ")
+            Log.d(TAG, "Reset response: $resetResp")
+            if (!resetResp.contains("ELM", ignoreCase = true)) {
+                Log.e(TAG, "Failed to reset ELM327: $resetResp")
+                return false
+            }
+            delay(1500)
 
-            // If we get any response, we likely have communication with the adapter
-            if (resetResponse.isEmpty()) {
-                Log.e(TAG, "No response from adapter after reset")
+            // Base configuration
+            val baseCommands = listOf(
+                "ATD",     // defaults
+                "ATE0",    // echo off
+                "ATL0",    // linefeeds off
+                "ATS0",    // spaces off
+                "ATH0"     // headers off
+            )
+            for (cmd in baseCommands) {
+                val resp = sendCommand(cmd)
+                Log.d(TAG, "Config cmd $cmd -> $resp")
+                delay(500)
+            }
+
+            // Auto protocol detection
+            sendCommand("ATSP0")
+            delay(500)
+            val proto = sendCommand("ATDP")
+            Log.d(TAG, "Detected protocol: $proto")
+            // Force CAN 11/500 if detection fails or wrong
+            if (!proto.contains("15765", ignoreCase = true)) {
+                val forced = sendCommand("ATSP6")
+                Log.w(TAG, "Forcing CAN protocol: $forced")
+                delay(500)
+            }
+
+            // Check ECU connectivity
+            val ecuResp = sendCommand("0100")
+            Log.d(TAG, "ECU check -> $ecuResp")
+            if (!ecuResp.matchRegex("41 00")) {
+                Log.e(TAG, "Failed ECU handshake: $ecuResp")
                 return false
             }
 
-            // Store adapter info for debugging
-            adapterType = resetResponse
-            Log.d(TAG, "Adapter identified as: $adapterType")
-
-            // More gentle delay after reset
-            delay(2000)
-            clearBuffer()
-
-            // Try different initialization sequences based on common adapter types
-            if (tryStandardInitialization() || tryAlternativeInitialization()) {
-                isInitialized = true
-                return true
+            // Timing and protocol tweaks
+            listOf("ATAT1", "ATST64").forEach { cmd ->
+                val r = sendCommand(cmd)
+                Log.d(TAG, "Timing cmd $cmd -> $r")
+                delay(300)
             }
 
-            Log.e(TAG, "All initialization attempts failed")
-            return false
+            isInitialized = true
+            return true
 
         } catch (e: Exception) {
-            Log.e(TAG, "Exception during setupELM: ${e.message}")
-            e.printStackTrace()
+            Log.e(TAG, "setupELM error: ${e.message}")
             return false
         }
     }
 
-    private suspend fun tryStandardInitialization(): Boolean {
-        Log.d(TAG, "Attempting standard initialization sequence")
-
-        val commands = listOf(
-            "ATE0",    // Echo off
-            "ATL0",    // Linefeeds off
-            "ATH0",    // Headers off
-            "ATS0",    // Spaces off
-            "ATSP0"    // Auto protocol
-        )
-
-        for (cmd in commands) {
-            val response = sendCommandWithRetry(cmd, 2)
-            Log.d(TAG, "Standard init cmd: $cmd, response: $response")
-            delay(300)
-
-            // Most commands should return "OK" if successful
-            if (!response.contains("OK") && !response.contains("ELM") && response != "?") {
-                Log.w(TAG, "Command $cmd did not return expected response")
-                // Continue anyway - some adapters don't strictly follow protocol
-            }
-        }
-
-        // Try a simple test command to see if we can talk to the car
-        val testResponse = sendCommandWithRetry("0100", 3) // Request supported PIDs 01-20
-        Log.d(TAG, "Test command response: $testResponse")
-
-        // Check if we got any reasonable response (41 = response to command 01)
-        return testResponse.contains("41") || testResponse.contains("SEARCHING")
-    }
-
-    private suspend fun tryAlternativeInitialization(): Boolean {
-        Log.d(TAG, "Attempting alternative initialization sequence")
-
-        // Reset again before trying alternative approach
-        sendCommandWithRetry("ATZ", 2)
-        delay(1000)
-        clearBuffer()
-
-        val altCommands = listOf(
-            "ATD",     // Set all to defaults
-            "ATE0",    // Echo off
-            "ATPP 0C SV FF", // Hot start
-            "ATPP 0D SV FF", // Enable all protocols
-            "ATM0",    // Memory off
-            "ATSP6",   // Try CAN protocol specifically (common for newer cars)
-            "ATCAF0",  // CAN Auto Format off
-            "ATAT1",   // Allow adaptive timing
-            "ATST64"   // Timeout 400ms (hex 64)
-        )
-
-        for (cmd in altCommands) {
-            val response = sendCommandWithRetry(cmd, 2)
-            Log.d(TAG, "Alt init cmd: $cmd, response: $response")
-            delay(300)
-        }
-
-        // Try a different test command
-        val testResponse = sendCommandWithRetry("01 00", 3)
-        Log.d(TAG, "Alt test command response: $testResponse")
-
-        // If that didn't work, try one more approach with slower timing
-        if (!testResponse.contains("41") && !testResponse.contains("SEARCHING")) {
-            Log.d(TAG, "Trying slow timing approach")
-            sendCommandWithRetry("ATST C8", 1) // Much longer timeout (200ms × 8)
-            sendCommandWithRetry("ATAT2", 1)   // Adaptive timing more aggressive
-
-            val finalTest = sendCommandWithRetry("0100", 3)
-            Log.d(TAG, "Final test response: $finalTest")
-            return finalTest.contains("41") || finalTest.contains("SEARCHING")
-        }
-
-        return testResponse.contains("41") || testResponse.contains("SEARCHING")
-    }
-
-    private suspend fun sendCommandWithRetry(cmd: String, retries: Int): String {
-        var attempts = 0
-        var response = ""
-
-        while (attempts < retries) {
-            response = sendCommand(cmd)
-
-            // If we got any meaningful response, return it
-            if (response.isNotEmpty() && response != "?" && !response.contains("ERROR")) {
-                return response
-            }
-
-            Log.d(TAG, "Retry $attempts for command $cmd")
-            attempts++
-            delay(300)
-        }
-
-        return response
-    }
-
+    /**
+     * Sends an AT or OBD command, waits for '>' prompt, returns raw response.
+     */
     private fun sendCommand(cmd: String): String {
         val full = (cmd + "\r").toByteArray()
         try {
             clearBuffer()
-            output.write(full)
-            output.flush()
-
-            val response = readResponseWithTimeout()
-            Log.d(TAG, "Sent: $cmd | Response: $response")
-            return response
+            output.write(full); output.flush()
+            val resp = readResponseWithTimeout(7000)
+            Log.d(TAG, "Sent '$cmd' | Raw resp: ${resp.visualize()} ")
+            return resp
         } catch (e: IOException) {
-            Log.e(TAG, "Error sending command: ${e.message}")
-            return "ERROR"
+            Log.e(TAG, "sendCommand IOException: ${e.message}")
+            return ""
         }
     }
 
+    /**
+     * Clears any residual bytes in the input buffer.
+     */
     private fun clearBuffer() {
         try {
             if (!::input.isInitialized) return
-
-            var count = 0
-            while (input.available() > 0 && count < 1000) { // Safety limit
-                input.read()
-                count++
-            }
-            if (count > 0) {
-                Log.d(TAG, "Cleared $count bytes from buffer")
-            }
+            while (input.available() > 0) { input.read() }
         } catch (e: IOException) {
-            Log.e(TAG, "Error clearing buffer: ${e.message}")
+            Log.e(TAG, "clearBuffer error: ${e.message}")
         }
     }
 
-    private fun readResponseWithTimeout(): String {
-        val startTime = System.currentTimeMillis()
-        val timeout = 3000L // 3 seconds max wait
-        val buffer = StringBuilder()
-        var lastReadTime = startTime
-
+    /**
+     * Reads until '>' prompt or timeout.
+     */
+    private fun readResponseWithTimeout(timeoutMs: Long): String {
+        val start = System.currentTimeMillis()
+        val buf = StringBuilder()
         try {
-            while (System.currentTimeMillis() - startTime < timeout) {
+            while (System.currentTimeMillis() - start < timeoutMs) {
                 if (input.available() > 0) {
-                    val data = ByteArray(128)
-                    val bytes = input.read(data)
-                    if (bytes > 0) {
-                        buffer.append(String(data, 0, bytes))
-                        lastReadTime = System.currentTimeMillis()
-                    }
-
-                    // Check for response termination
-                    val currentResponse = buffer.toString()
-                    if (currentResponse.contains(">") ||
-                        currentResponse.contains("?") ||
-                        (currentResponse.contains("OK") && !currentResponse.contains("OK>") && !currentResponse.contains("ELM"))) {
-                        break
-                    }
+                    val data = ByteArray(256)
+                    val len = input.read(data)
+                    buf.append(String(data, 0, len))
+                    if (buf.contains('>')) break
                 }
-
-                // If no new data for 500ms, we're likely done
-                if (System.currentTimeMillis() - lastReadTime > 500 && buffer.isNotEmpty()) {
-                    break
-                }
-
                 Thread.sleep(50)
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Error reading response: ${e.message}")
+            Log.e(TAG, "readResponse error: ${e.message}")
         }
-
-        val response = buffer.toString().replace(">", "").trim()
-        return response
+        return buf.toString().replace('>', ' ').trim()
     }
 
+    /**
+     * Reads a PID and returns its integer value (e.g., RPM or speed).
+     */
     suspend fun readPID(pidHex: Int): Int = withContext(Dispatchers.IO) {
         if (!isInitialized) {
-            Log.e(TAG, "ELM not initialized before reading PID")
+            Log.e(TAG, "readPID called before init")
             return@withContext -1
         }
 
         val pid = String.format(Locale.US, "%02X", pidHex)
-        val command = "01$pid"
-        val response = sendCommandWithRetry(command, 2)
-
-        if (response.contains("NO DATA") || response.isEmpty() || response == "ERROR" || response == "?") {
-            Log.e(TAG, "No data received for PID $pid: $response")
+        val cmd = "01$pid"
+        val resp = sendCommand(cmd)
+        if (resp.isBlank() || resp.contains("NO DATA", ignoreCase = true)) {
             return@withContext -1
         }
 
-        try {
-            Log.d(TAG, "Processing response for PID $pid: $response")
-            // Clean and split the response
-            val cleanResponse = response.replace("\r", " ").replace("\n", " ")
-                .replace(">", " ").replace("41", " 41")
-
-            val parts = cleanResponse.split(" ").filter { it.isNotEmpty() }
-            Log.d(TAG, "Parsed parts: $parts")
-
-            // Look for the 41 XX pattern (41 = response code, XX = PID)
-            var dataIndex = -1
-            for (i in 0 until parts.size - 1) {
-                if (parts[i] == "41" && parts[i+1].uppercase() == pid) {
-                    dataIndex = i + 2
-                    break
+        // Normalize response
+        val normalized = resp.uppercase(Locale.US).replace(Regex("\\s+"), " ")
+        // Regex for mode 01 responses
+        val regex = Regex("41 $pid ([0-9A-F]{2})(?: ([0-9A-F]{2}))?")
+        val match = regex.find(normalized)
+        if (match != null) {
+            val bytes = match.groupValues.drop(1).filter { it.isNotEmpty() }
+            try {
+                return@withContext when (pidHex) {
+                    0x0C -> { // RPM requires two bytes
+                        val A = bytes[0].toInt(16)
+                        val B = bytes[1].toInt(16)
+                        (A * 256 + B) / 4
+                    }
+                    0x0D -> { // Speed one byte
+                        bytes[0].toInt(16)
+                    }
+                    else -> bytes[0].toInt(16)
                 }
-            }
-
-            if (dataIndex == -1 || dataIndex >= parts.size) {
-                Log.e(TAG, "Cannot find data bytes in response for PID $pid")
+            } catch (e: Exception) {
+                Log.e(TAG, "Parsing error for PID $pid: ${e.message}")
                 return@withContext -1
             }
-
-            when (pidHex) {
-                0x0C -> { // RPM calculation: ((A * 256) + B) / 4
-                    if (dataIndex + 1 >= parts.size) {
-                        Log.e(TAG, "Not enough data bytes for RPM")
-                        return@withContext -1
-                    }
-
-                    val A = parts[dataIndex].toIntOrNull(16) ?: 0
-                    val B = parts[dataIndex + 1].toIntOrNull(16) ?: 0
-                    val rpm = (A * 256 + B) / 4
-                    Log.d(TAG, "Calculated RPM: $rpm (A=$A, B=$B)")
-                    rpm
-                }
-                else -> {
-                    parts[dataIndex].toIntOrNull(16) ?: -1
-                }
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Error parsing response: ${e.message}")
-            -1
         }
+
+        Log.e(TAG, "No valid data for PID $pid in: $normalized")
+        -1
     }
+
+    // Extension for easy visualization of control chars
+    private fun String.visualize() = this
+        .replace("\r", "\\r")
+        .replace("\n", "\\n")
+
+    // Helper to quickly test basic match before regex
+    private fun String.matchRegex(pattern: String) =
+        Regex(pattern.replace(" ", "\\s*")).containsMatchIn(this)
 }
