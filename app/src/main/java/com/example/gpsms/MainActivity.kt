@@ -164,56 +164,88 @@ class MainActivity : AppCompatActivity() {
             // Show connecting status
             btnConnectOBD.isEnabled = false
             btnConnectOBD.text = "Connecting..."
-            tvRPM.text = "RPM: Connecting..."
+            tvRPM.text = "Connecting to OBD..."
 
             val device = pairedDevices[idx]
+            Log.d("MainActivity", "Attempting to connect to device: ${device.name} (${device.address})")
 
             CoroutineScope(Dispatchers.IO).launch {
                 try {
+                    // Step 1: Connect to Bluetooth device
+                    withContext(Dispatchers.Main) {
+                        tvRPM.text = "Establishing Bluetooth connection..."
+                    }
+
                     val socket = btHelper.connect(device)
-                    if (socket != null) {
-                        obdSocket = socket
-
-                        // Setup ELM with proper initialization
-                        val initialized = obdManager.setupELM(socket.inputStream, socket.outputStream)
-
-                        if (initialized) {
-                            // Cancel existing job if any
-                            obdJob?.cancel()
-
-                            // Start new polling job
-                            obdJob = launch {
-                                pollRPM()
-                            }
-
-                            withContext(Dispatchers.Main) {
-                                btnConnectOBD.text = "Connected to OBD"
-                                btnConnectOBD.isEnabled = true
-                                Toast.makeText(this@MainActivity, "OBD Connected Successfully", Toast.LENGTH_SHORT).show()
-                            }
-                        } else {
-                            btHelper.disconnect(socket)
-                            withContext(Dispatchers.Main) {
-                                btnConnectOBD.text = "Connect OBD"
-                                btnConnectOBD.isEnabled = true
-                                tvRPM.text = "RPM: Not connected"
-                                Toast.makeText(this@MainActivity, "Failed to initialize OBD adapter", Toast.LENGTH_SHORT).show()
-                            }
-                        }
-                    } else {
+                    if (socket == null) {
                         withContext(Dispatchers.Main) {
                             btnConnectOBD.text = "Connect OBD"
                             btnConnectOBD.isEnabled = true
-                            tvRPM.text = "RPM: Not connected"
-                            Toast.makeText(this@MainActivity, "OBD Connection Failed", Toast.LENGTH_SHORT).show()
+                            tvRPM.text = "Bluetooth connection failed"
+                            Toast.makeText(this@MainActivity, "Failed to connect via Bluetooth", Toast.LENGTH_SHORT).show()
+                        }
+                        return@launch
+                    }
+
+                    // Step 2: Initialize the OBD adapter
+                    withContext(Dispatchers.Main) {
+                        tvRPM.text = "Initializing OBD adapter..."
+                    }
+
+                    obdSocket = socket
+                    val initialized = obdManager.setupELM(socket.inputStream, socket.outputStream)
+
+                    if (initialized) {
+                        // Step 3: Start monitoring
+                        withContext(Dispatchers.Main) {
+                            tvRPM.text = "OBD connected! Waiting for data..."
+                            btnConnectOBD.text = "Connected"
+                            btnConnectOBD.isEnabled = true
+                            Toast.makeText(this@MainActivity, "OBD Connected Successfully", Toast.LENGTH_SHORT).show()
+                        }
+
+                        // Cancel existing job if any
+                        obdJob?.cancel()
+
+                        // Start new polling job with error handling
+                        obdJob = launch {
+                            try {
+                                // Test read to verify connection works
+                                val initialRpm = obdManager.readPID(0x0C)
+                                withContext(Dispatchers.Main) {
+                                    if (initialRpm > 0) {
+                                        tvRPM.text = "RPM: $initialRpm"
+                                    } else {
+                                        tvRPM.text = "RPM: Waiting for engine data..."
+                                    }
+                                }
+
+                                // Begin regular polling
+                                pollRPM()
+                            } catch (e: Exception) {
+                                Log.e("MainActivity", "Error in initial RPM read: ${e.message}")
+                                withContext(Dispatchers.Main) {
+                                    tvRPM.text = "Error reading RPM data"
+                                }
+                            }
+                        }
+                    } else {
+                        btHelper.disconnect(socket)
+                        withContext(Dispatchers.Main) {
+                            btnConnectOBD.text = "Connect OBD"
+                            btnConnectOBD.isEnabled = true
+                            tvRPM.text = "OBD initialization failed"
+                            Toast.makeText(this@MainActivity, "Failed to initialize OBD adapter. Try again or use a different adapter.", Toast.LENGTH_LONG).show()
                         }
                     }
                 } catch (e: Exception) {
+                    Log.e("MainActivity", "Exception during OBD connection: ${e.message}")
+                    e.printStackTrace()
                     withContext(Dispatchers.Main) {
                         btnConnectOBD.text = "Connect OBD"
                         btnConnectOBD.isEnabled = true
-                        tvRPM.text = "RPM: Error"
-                        Toast.makeText(this@MainActivity, "Error: ${e.message}", Toast.LENGTH_SHORT).show()
+                        tvRPM.text = "Connection error: ${e.message}"
+                        Toast.makeText(this@MainActivity, "Error: ${e.message}", Toast.LENGTH_LONG).show()
                     }
                 }
             }
@@ -239,13 +271,17 @@ class MainActivity : AppCompatActivity() {
     /**
      * Polls RPM (PID 0x0C) continuously while coroutine is active
      */
-    // Update the pollRPM function for better error handling
+    // Updated pollRPM function with more resilient error handling
     private suspend fun CoroutineScope.pollRPM() {
+        var consecutiveErrors = 0
+
         while (isActive) {
             try {
                 val rpm = obdManager.readPID(0x0C)
+
                 withContext(Dispatchers.Main) {
                     if (rpm > 0) {
+                        consecutiveErrors = 0 // Reset error counter on success
                         tvRPM.text = "RPM: $rpm"
 
                         // Send RPM to LocationService if tracking is active
@@ -257,18 +293,37 @@ class MainActivity : AppCompatActivity() {
                             startService(intent)
                         }
                     } else {
+                        // Don't count "-1" as an error if the engine might be off
                         tvRPM.text = "RPM: Waiting for data..."
                     }
                 }
             } catch (e: Exception) {
                 Log.e("MainActivity", "Error polling RPM: ${e.message}")
+                consecutiveErrors++
+
                 withContext(Dispatchers.Main) {
-                    tvRPM.text = "RPM: Error - ${e.message}"
+                    if (consecutiveErrors > 5) {
+                        tvRPM.text = "Connection problems. Try reconnecting."
+                    } else {
+                        tvRPM.text = "RPM: Reading error (${consecutiveErrors})"
+                    }
+                }
+
+                // If too many consecutive errors, consider reconnecting
+                if (consecutiveErrors > 10) {
+                    Log.w("MainActivity", "Too many consecutive errors. Stopping RPM polling.")
+                    break
                 }
             }
+
             delay(1000L)
         }
+
+        withContext(Dispatchers.Main) {
+            tvRPM.text = "RPM monitoring stopped"
+        }
     }
+
 
 
     /**
