@@ -31,11 +31,14 @@ class MainActivity : AppCompatActivity() {
     private lateinit var toggleTrackingButton: Button
     private lateinit var btnConnectOBD: Button
     private lateinit var tvRPM: TextView
+    private lateinit var switchSimulation: Switch
 
     // --- State ---
     private var isTracking = false
     private var obdJob: Job? = null
     private var obdSocket: BluetoothSocket? = null
+    private var isSimulationMode = false
+    private var simulationJob: Job? = null
 
     // --- Bluetooth and OBD Managers ---
     private lateinit var btHelper: BluetoothHelper
@@ -90,6 +93,7 @@ class MainActivity : AppCompatActivity() {
         toggleTrackingButton = findViewById(R.id.startTrackingButton)
         btnConnectOBD = findViewById(R.id.btnConnectOBD)
         tvRPM = findViewById(R.id.tvRPM)
+        switchSimulation = findViewById(R.id.switchSimulation)
 
         // --- Vehicle Spinner setup ---
         ArrayAdapter.createFromResource(
@@ -109,6 +113,42 @@ class MainActivity : AppCompatActivity() {
                 prefs.edit().putInt("vehicle_id", selectedId).apply()
             }
             override fun onNothingSelected(parent: AdapterView<*>) {}
+        }
+
+        // --- Simulation Switch setup ---
+        switchSimulation.setOnCheckedChangeListener { _, isChecked ->
+            isSimulationMode = isChecked
+
+            if (isSimulationMode) {
+                // Cancel OBD job if running
+                obdJob?.cancel()
+
+                // Disconnect OBD if connected
+                btHelper.disconnect(obdSocket)
+                obdSocket = null
+
+                // Start simulation
+                btnConnectOBD.isEnabled = false
+                spinnerDevices.isEnabled = false
+                tvRPM.text = "RPM: Simulation mode"
+
+                // Start simulation job
+                simulationJob = CoroutineScope(Dispatchers.Default).launch {
+                    simulateRPM()
+                }
+
+                Toast.makeText(this, "RPM simulation started", Toast.LENGTH_SHORT).show()
+            } else {
+                // Stop simulation
+                simulationJob?.cancel()
+
+                // Re-enable OBD controls
+                btnConnectOBD.isEnabled = true
+                spinnerDevices.isEnabled = true
+                tvRPM.text = "RPM: Not connected"
+
+                Toast.makeText(this, "RPM simulation stopped", Toast.LENGTH_SHORT).show()
+            }
         }
 
         // --- Permissions ---
@@ -230,6 +270,7 @@ class MainActivity : AppCompatActivity() {
     override fun onDestroy() {
         super.onDestroy()
         obdJob?.cancel()
+        simulationJob?.cancel()
         btHelper.disconnect(obdSocket) // Close socket if connected
         try {
             unregisterReceiver(locationUpdateReceiver)
@@ -270,6 +311,49 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /**
+     * Simulates RPM values with realistic changes to mimic driving patterns
+     */
+    private suspend fun CoroutineScope.simulateRPM() {
+        val random = java.util.Random()
+        var trend = 0
+        var currentSimRPM = 800
+
+        while (isActive) {
+            try {
+                // Occasionally change the trend (accelerating, decelerating, idle)
+                if (random.nextInt(10) == 0) {
+                    trend = random.nextInt(3) - 1 // -1, 0, or 1
+                }
+
+                // Apply the trend with some randomness
+                when (trend) {
+                    -1 -> currentSimRPM -= random.nextInt(100) + 50 // Deceleration
+                    0 -> currentSimRPM += random.nextInt(60) - 30   // Idle fluctuation
+                    1 -> currentSimRPM += random.nextInt(150) + 50  // Acceleration
+                }
+
+                // Keep RPM within realistic bounds
+                currentSimRPM = currentSimRPM.coerceIn(700, 6000)
+
+                withContext(Dispatchers.Main) {
+                    tvRPM.text = "RPM: $currentSimRPM (simulated)"
+
+                    // Send simulated RPM to LocationService if tracking is active
+                    if (isTracking) {
+                        val intent = Intent(this@MainActivity, LocationService::class.java).apply {
+                            action = LocationService.ACTION_UPDATE_RPM
+                            putExtra(LocationService.EXTRA_RPM_VALUE, currentSimRPM)
+                        }
+                        startService(intent)
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e("MainActivity", "Error in RPM simulation: ${e.message}")
+            }
+            delay(1000L)
+        }
+    }
 
     /**
      * Permission and service utilities
