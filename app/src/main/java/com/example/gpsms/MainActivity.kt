@@ -20,6 +20,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.isActive
+import android.util.Log
 
 class MainActivity : AppCompatActivity() {
 
@@ -160,24 +161,59 @@ class MainActivity : AppCompatActivity() {
                 return@setOnClickListener
             }
 
+            // Show connecting status
+            btnConnectOBD.isEnabled = false
+            btnConnectOBD.text = "Connecting..."
+            tvRPM.text = "RPM: Connecting..."
+
             val device = pairedDevices[idx]
 
             CoroutineScope(Dispatchers.IO).launch {
-                val socket = btHelper.connect(device)
-                if (socket != null) {
-                    obdSocket = socket
-                    obdManager.setupELM(socket.inputStream, socket.outputStream)
+                try {
+                    val socket = btHelper.connect(device)
+                    if (socket != null) {
+                        obdSocket = socket
 
-                    obdJob = launch {
-                        pollRPM() // CoroutineScope passed implicitly
-                    }
+                        // Setup ELM with proper initialization
+                        val initialized = obdManager.setupELM(socket.inputStream, socket.outputStream)
 
-                    withContext(Dispatchers.Main) {
-                        Toast.makeText(this@MainActivity, "OBD Connected", Toast.LENGTH_SHORT).show()
+                        if (initialized) {
+                            // Cancel existing job if any
+                            obdJob?.cancel()
+
+                            // Start new polling job
+                            obdJob = launch {
+                                pollRPM()
+                            }
+
+                            withContext(Dispatchers.Main) {
+                                btnConnectOBD.text = "Connected to OBD"
+                                btnConnectOBD.isEnabled = true
+                                Toast.makeText(this@MainActivity, "OBD Connected Successfully", Toast.LENGTH_SHORT).show()
+                            }
+                        } else {
+                            btHelper.disconnect(socket)
+                            withContext(Dispatchers.Main) {
+                                btnConnectOBD.text = "Connect OBD"
+                                btnConnectOBD.isEnabled = true
+                                tvRPM.text = "RPM: Not connected"
+                                Toast.makeText(this@MainActivity, "Failed to initialize OBD adapter", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                    } else {
+                        withContext(Dispatchers.Main) {
+                            btnConnectOBD.text = "Connect OBD"
+                            btnConnectOBD.isEnabled = true
+                            tvRPM.text = "RPM: Not connected"
+                            Toast.makeText(this@MainActivity, "OBD Connection Failed", Toast.LENGTH_SHORT).show()
+                        }
                     }
-                } else {
+                } catch (e: Exception) {
                     withContext(Dispatchers.Main) {
-                        Toast.makeText(this@MainActivity, "OBD Connection Failed", Toast.LENGTH_SHORT).show()
+                        btnConnectOBD.text = "Connect OBD"
+                        btnConnectOBD.isEnabled = true
+                        tvRPM.text = "RPM: Error"
+                        Toast.makeText(this@MainActivity, "Error: ${e.message}", Toast.LENGTH_SHORT).show()
                     }
                 }
             }
@@ -203,19 +239,31 @@ class MainActivity : AppCompatActivity() {
     /**
      * Polls RPM (PID 0x0C) continuously while coroutine is active
      */
+    // Update the pollRPM function for better error handling
     private suspend fun CoroutineScope.pollRPM() {
         while (isActive) {
-            val rpm = obdManager.readPID(0x0C)
-            withContext(Dispatchers.Main) {
-                tvRPM.text = "RPM: $rpm"
+            try {
+                val rpm = obdManager.readPID(0x0C)
+                withContext(Dispatchers.Main) {
+                    if (rpm > 0) {
+                        tvRPM.text = "RPM: $rpm"
 
-                // Send RPM to LocationService if tracking is active
-                if (isTracking && rpm > 0) {
-                    val intent = Intent(this@MainActivity, LocationService::class.java).apply {
-                        action = LocationService.ACTION_UPDATE_RPM
-                        putExtra(LocationService.EXTRA_RPM_VALUE, rpm)
+                        // Send RPM to LocationService if tracking is active
+                        if (isTracking) {
+                            val intent = Intent(this@MainActivity, LocationService::class.java).apply {
+                                action = LocationService.ACTION_UPDATE_RPM
+                                putExtra(LocationService.EXTRA_RPM_VALUE, rpm)
+                            }
+                            startService(intent)
+                        }
+                    } else {
+                        tvRPM.text = "RPM: Waiting for data..."
                     }
-                    startService(intent)
+                }
+            } catch (e: Exception) {
+                Log.e("MainActivity", "Error polling RPM: ${e.message}")
+                withContext(Dispatchers.Main) {
+                    tvRPM.text = "RPM: Error - ${e.message}"
                 }
             }
             delay(1000L)
