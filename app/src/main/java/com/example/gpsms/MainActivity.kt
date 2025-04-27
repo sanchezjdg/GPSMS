@@ -16,11 +16,8 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.*
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.isActive
 import android.util.Log
+import java.util.UUID
 
 class MainActivity : AppCompatActivity() {
 
@@ -53,17 +50,15 @@ class MainActivity : AppCompatActivity() {
     private val bluetoothPermissionRequestCode = 1001
 
     @RequiresApi(Build.VERSION_CODES.S)
-    private fun hasBluetoothPermissions(): Boolean {
-        return bluetoothPermissions.all {
+    private fun hasBluetoothPermissions(): Boolean =
+        bluetoothPermissions.all {
             ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED
         }
-    }
 
     @RequiresApi(Build.VERSION_CODES.S)
     private fun requestBluetoothPermissions() {
         ActivityCompat.requestPermissions(this, bluetoothPermissions, bluetoothPermissionRequestCode)
     }
-
 
     // --- Broadcast receiver for location updates ---
     private val locationUpdateReceiver = object : BroadcastReceiver() {
@@ -84,7 +79,6 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
-
 
         // --- Bind UI ---
         messageTextView = findViewById(R.id.messageTextView)
@@ -120,40 +114,25 @@ class MainActivity : AppCompatActivity() {
             isSimulationMode = isChecked
 
             if (isSimulationMode) {
-                // Cancel OBD job if running
                 obdJob?.cancel()
-
-                // Disconnect OBD if connected
                 btHelper.disconnect(obdSocket)
                 obdSocket = null
-
-                // Start simulation
                 btnConnectOBD.isEnabled = false
                 spinnerDevices.isEnabled = false
                 tvRPM.text = "RPM: Simulation mode"
-
-                // Start simulation job
-                simulationJob = CoroutineScope(Dispatchers.Default).launch {
-                    simulateRPM()
-                }
-
+                simulationJob = CoroutineScope(Dispatchers.Default).launch { simulateRPM() }
                 Toast.makeText(this, "RPM simulation started", Toast.LENGTH_SHORT).show()
             } else {
-                // Stop simulation
                 simulationJob?.cancel()
-
-                // Re-enable OBD controls
                 btnConnectOBD.isEnabled = true
                 spinnerDevices.isEnabled = true
                 tvRPM.text = "RPM: Not connected"
-
                 Toast.makeText(this, "RPM simulation stopped", Toast.LENGTH_SHORT).show()
             }
         }
 
         // --- Permissions ---
         requestPermissions()
-
         if (!hasBluetoothPermissions()) {
             requestBluetoothPermissions()
             return
@@ -164,11 +143,11 @@ class MainActivity : AppCompatActivity() {
         obdManager = OBDManager()
 
         // --- Populate Bluetooth Devices ---
-        val pairedDevices = btHelper.getPairedDevices().toList()
+        val pairedDevices = btHelper.getPairedDevices()
         val deviceNames = pairedDevices.map { it.name }
-        val adapter = ArrayAdapter(this, android.R.layout.simple_spinner_item, deviceNames)
-        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
-        spinnerDevices.adapter = adapter
+        spinnerDevices.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_item, deviceNames).apply {
+            setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+        }
 
         // --- GPS Toggle Button ---
         toggleTrackingButton.text = getString(R.string.iniciar_rastreo)
@@ -195,37 +174,31 @@ class MainActivity : AppCompatActivity() {
         // --- Connect OBD Button ---
         btnConnectOBD.setOnClickListener {
             val idx = spinnerDevices.selectedItemPosition
-
             if (idx == -1 || pairedDevices.isEmpty()) {
                 Toast.makeText(this, "No Bluetooth devices available", Toast.LENGTH_SHORT).show()
                 return@setOnClickListener
             }
-
-            // Show connecting status
             btnConnectOBD.isEnabled = false
             btnConnectOBD.text = "Connecting..."
             tvRPM.text = "RPM: Connecting..."
 
             val device = pairedDevices[idx]
-
             CoroutineScope(Dispatchers.IO).launch {
                 try {
-                    val socket = btHelper.connect(device)
+                    if (device.uuids.isNullOrEmpty()) {
+                        device.fetchUuidsWithSdp()
+                        delay(500)
+                    }
+                    val serviceUuid: UUID = device.uuids?.firstOrNull()?.uuid
+                        ?: BluetoothHelper.SPP_UUID
+
+                    val socket = btHelper.connect(device, serviceUuid)
                     if (socket != null) {
                         obdSocket = socket
-
-                        // Setup ELM with proper initialization
                         val initialized = obdManager.setupELM(socket.inputStream, socket.outputStream)
-
                         if (initialized) {
-                            // Cancel existing job if any
                             obdJob?.cancel()
-
-                            // Start new polling job
-                            obdJob = launch {
-                                pollRPM()
-                            }
-
+                            obdJob = launch { pollRPM() }
                             withContext(Dispatchers.Main) {
                                 btnConnectOBD.text = "Connected to OBD"
                                 btnConnectOBD.isEnabled = true
@@ -253,7 +226,7 @@ class MainActivity : AppCompatActivity() {
                         btnConnectOBD.text = "Connect OBD"
                         btnConnectOBD.isEnabled = true
                         tvRPM.text = "RPM: Error"
-                        Toast.makeText(this@MainActivity, "Error: ${e.message}", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(this@MainActivity, "Error: ${'$'}{e.message}", Toast.LENGTH_SHORT).show()
                     }
                 }
             }
@@ -271,16 +244,10 @@ class MainActivity : AppCompatActivity() {
         super.onDestroy()
         obdJob?.cancel()
         simulationJob?.cancel()
-        btHelper.disconnect(obdSocket) // Close socket if connected
-        try {
-            unregisterReceiver(locationUpdateReceiver)
-        } catch (_: Exception) {}
+        btHelper.disconnect(obdSocket)
+        try { unregisterReceiver(locationUpdateReceiver) } catch (_: Exception) {}
     }
 
-    /**
-     * Polls RPM (PID 0x0C) continuously while coroutine is active
-     */
-    // Update the pollRPM function for better error handling
     private suspend fun CoroutineScope.pollRPM() {
         while (isActive) {
             try {
@@ -288,8 +255,6 @@ class MainActivity : AppCompatActivity() {
                 withContext(Dispatchers.Main) {
                     if (rpm > 0) {
                         tvRPM.text = "RPM: $rpm"
-
-                        // Send RPM to LocationService if tracking is active
                         if (isTracking) {
                             val intent = Intent(this@MainActivity, LocationService::class.java).apply {
                                 action = LocationService.ACTION_UPDATE_RPM
@@ -302,69 +267,46 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
             } catch (e: Exception) {
-                Log.e("MainActivity", "Error polling RPM: ${e.message}")
                 withContext(Dispatchers.Main) {
-                    tvRPM.text = "RPM: Error - ${e.message}"
+                    tvRPM.text = "RPM: Error - ${'$'}{e.message}"
                 }
             }
             delay(1000L)
         }
     }
 
-    /**
-     * Simulates RPM values with realistic changes to mimic driving patterns
-     */
     private suspend fun CoroutineScope.simulateRPM() {
         val random = java.util.Random()
         var trend = 0
         var currentSimRPM = 800
-
         while (isActive) {
-            try {
-                // Occasionally change the trend (accelerating, decelerating, idle)
-                if (random.nextInt(10) == 0) {
-                    trend = random.nextInt(3) - 1 // -1, 0, or 1
-                }
-
-                // Apply the trend with some randomness
-                when (trend) {
-                    -1 -> currentSimRPM -= random.nextInt(100) + 50 // Deceleration
-                    0 -> currentSimRPM += random.nextInt(60) - 30   // Idle fluctuation
-                    1 -> currentSimRPM += random.nextInt(150) + 50  // Acceleration
-                }
-
-                // Keep RPM within realistic bounds
-                currentSimRPM = currentSimRPM.coerceIn(700, 6000)
-
-                withContext(Dispatchers.Main) {
-                    tvRPM.text = "RPM: $currentSimRPM (simulated)"
-
-                    // Send simulated RPM to LocationService if tracking is active
-                    if (isTracking) {
-                        val intent = Intent(this@MainActivity, LocationService::class.java).apply {
-                            action = LocationService.ACTION_UPDATE_RPM
-                            putExtra(LocationService.EXTRA_RPM_VALUE, currentSimRPM)
-                        }
-                        startService(intent)
+            if (random.nextInt(10) == 0) trend = random.nextInt(3) - 1
+            when (trend) {
+                -1 -> currentSimRPM -= random.nextInt(100) + 50
+                0  -> currentSimRPM += random.nextInt(60) - 30
+                1  -> currentSimRPM += random.nextInt(150) + 50
+            }
+            currentSimRPM = currentSimRPM.coerceIn(700, 6000)
+            withContext(Dispatchers.Main) {
+                tvRPM.text = "RPM: $currentSimRPM${if (isSimulationMode) " (simulated)" else ""}"
+                if (isTracking) {
+                    val intent = Intent(this@MainActivity, LocationService::class.java).apply {
+                        action = LocationService.ACTION_UPDATE_RPM
+                        putExtra(LocationService.EXTRA_RPM_VALUE, currentSimRPM)
                     }
+                    startService(intent)
                 }
-            } catch (e: Exception) {
-                Log.e("MainActivity", "Error in RPM simulation: ${e.message}")
             }
             delay(1000L)
         }
     }
 
-    /**
-     * Permission and service utilities
-     */
     private fun checkPermissions(): Boolean {
         val fine = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
         val coarse = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION)
         val background = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q)
             ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_BACKGROUND_LOCATION)
         else PackageManager.PERMISSION_GRANTED
-
         return fine == PackageManager.PERMISSION_GRANTED &&
                 coarse == PackageManager.PERMISSION_GRANTED &&
                 background == PackageManager.PERMISSION_GRANTED
@@ -404,7 +346,6 @@ class MainActivity : AppCompatActivity() {
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(intent)
         else startService(intent)
-
         Toast.makeText(this, getString(R.string.rastreo_iniciado), Toast.LENGTH_SHORT).show()
     }
 
