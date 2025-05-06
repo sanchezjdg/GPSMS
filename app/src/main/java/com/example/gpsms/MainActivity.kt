@@ -98,7 +98,6 @@ class MainActivity : AppCompatActivity() {
             adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
             spinnerVehicle.adapter = adapter
         }
-
         val prefs = getSharedPreferences("gps_prefs", MODE_PRIVATE)
         spinnerVehicle.setSelection(prefs.getInt("vehicle_id", 1) - 1)
         spinnerVehicle.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
@@ -112,7 +111,6 @@ class MainActivity : AppCompatActivity() {
         // --- Simulation Switch setup ---
         switchSimulation.setOnCheckedChangeListener { _, isChecked ->
             isSimulationMode = isChecked
-
             if (isSimulationMode) {
                 obdJob?.cancel()
                 btHelper.disconnect(obdSocket)
@@ -144,93 +142,20 @@ class MainActivity : AppCompatActivity() {
 
         // --- Populate Bluetooth Devices ---
         val pairedDevices = btHelper.getPairedDevices()
-        val deviceNames = pairedDevices.map { it.name }
-        spinnerDevices.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_item, deviceNames).apply {
+        spinnerDevices.adapter = ArrayAdapter(
+            this,
+            android.R.layout.simple_spinner_item,
+            pairedDevices.map { it.name ?: it.address }
+        ).apply {
             setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
         }
 
         // --- GPS Toggle Button ---
         toggleTrackingButton.text = getString(R.string.iniciar_rastreo)
-        toggleTrackingButton.setOnClickListener {
-            if (isTracking) {
-                stopLocationService()
-                toggleTrackingButton.text = getString(R.string.iniciar_rastreo)
-            } else {
-                if (checkPermissions()) {
-                    if (isLocationEnabled()) {
-                        startLocationService()
-                        toggleTrackingButton.text = getString(R.string.detener_rastreo)
-                    } else {
-                        Toast.makeText(this, getString(R.string.ubicacion_desactivada), Toast.LENGTH_LONG).show()
-                        startActivity(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS))
-                    }
-                } else {
-                    requestPermissions()
-                }
-            }
-            isTracking = !isTracking
-        }
+        toggleTrackingButton.setOnClickListener { toggleTracking() }
 
         // --- Connect OBD Button ---
-        btnConnectOBD.setOnClickListener {
-            val idx = spinnerDevices.selectedItemPosition
-            if (idx == -1 || pairedDevices.isEmpty()) {
-                Toast.makeText(this, "No Bluetooth devices available", Toast.LENGTH_SHORT).show()
-                return@setOnClickListener
-            }
-            btnConnectOBD.isEnabled = false
-            btnConnectOBD.text = "Connecting..."
-            tvRPM.text = "RPM: Connecting..."
-
-            val device = pairedDevices[idx]
-            CoroutineScope(Dispatchers.IO).launch {
-                try {
-                    if (device.uuids.isNullOrEmpty()) {
-                        device.fetchUuidsWithSdp()
-                        delay(500)
-                    }
-                    val serviceUuid: UUID = device.uuids?.firstOrNull()?.uuid
-                        ?: BluetoothHelper.SPP_UUID
-
-                    val socket = btHelper.connect(device, serviceUuid)
-                    if (socket != null) {
-                        obdSocket = socket
-                        val initialized = obdManager.setupELM(socket.inputStream, socket.outputStream)
-                        if (initialized) {
-                            obdJob?.cancel()
-                            obdJob = launch { pollRPM() }
-                            withContext(Dispatchers.Main) {
-                                btnConnectOBD.text = "Connected to OBD"
-                                btnConnectOBD.isEnabled = true
-                                Toast.makeText(this@MainActivity, "OBD Connected Successfully", Toast.LENGTH_SHORT).show()
-                            }
-                        } else {
-                            btHelper.disconnect(socket)
-                            withContext(Dispatchers.Main) {
-                                btnConnectOBD.text = "Connect OBD"
-                                btnConnectOBD.isEnabled = true
-                                tvRPM.text = "RPM: Not connected"
-                                Toast.makeText(this@MainActivity, "Failed to initialize OBD adapter", Toast.LENGTH_SHORT).show()
-                            }
-                        }
-                    } else {
-                        withContext(Dispatchers.Main) {
-                            btnConnectOBD.text = "Connect OBD"
-                            btnConnectOBD.isEnabled = true
-                            tvRPM.text = "RPM: Not connected"
-                            Toast.makeText(this@MainActivity, "OBD Connection Failed", Toast.LENGTH_SHORT).show()
-                        }
-                    }
-                } catch (e: Exception) {
-                    withContext(Dispatchers.Main) {
-                        btnConnectOBD.text = "Connect OBD"
-                        btnConnectOBD.isEnabled = true
-                        tvRPM.text = "RPM: Error"
-                        Toast.makeText(this@MainActivity, "Error: ${'$'}{e.message}", Toast.LENGTH_SHORT).show()
-                    }
-                }
-            }
-        }
+        btnConnectOBD.setOnClickListener { connectToObd(pairedDevices) }
 
         // --- Register location receiver ---
         registerReceiver(
@@ -248,27 +173,106 @@ class MainActivity : AppCompatActivity() {
         try { unregisterReceiver(locationUpdateReceiver) } catch (_: Exception) {}
     }
 
+    private fun toggleTracking() {
+        if (isTracking) {
+            stopLocationService()
+            toggleTrackingButton.text = getString(R.string.iniciar_rastreo)
+        } else {
+            if (checkPermissions()) {
+                if (isLocationEnabled()) {
+                    startLocationService()
+                    toggleTrackingButton.text = getString(R.string.detener_rastreo)
+                } else {
+                    Toast.makeText(this, getString(R.string.ubicacion_desactivada), Toast.LENGTH_LONG).show()
+                    startActivity(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS))
+                }
+            } else {
+                requestPermissions()
+            }
+        }
+        isTracking = !isTracking
+    }
+
+    @RequiresApi(Build.VERSION_CODES.S)
+    private fun connectToObd(pairedDevices: List<android.bluetooth.BluetoothDevice>) {
+        // --- Permission check ---
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT)
+            != PackageManager.PERMISSION_GRANTED
+        ) {
+            // Request Bluetooth permissions and abort until user responds
+            requestBluetoothPermissions()
+            return
+        }
+
+        val idx = spinnerDevices.selectedItemPosition
+        if (idx < 0 || pairedDevices.isEmpty()) {
+            Toast.makeText(this, "No Bluetooth devices available", Toast.LENGTH_SHORT).show()
+            return
+        }
+        btnConnectOBD.isEnabled = false
+        btnConnectOBD.text = "Connecting..."
+        tvRPM.text = "RPM: Connecting..."
+
+        val device = pairedDevices[idx]
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                // Safe to call fetchUuidsWithSdp() now that we have BLUETOOTH_CONNECT
+                if (device.uuids.isNullOrEmpty()) {
+                    device.fetchUuidsWithSdp()
+                    delay(500)
+                }
+                val uuid = device.uuids?.firstOrNull()?.uuid
+                    ?: BluetoothHelper.SPP_UUID
+
+                val socket = btHelper.connect(device, uuid)
+                if (socket != null) {
+                    obdSocket = socket
+                    val initialized = obdManager.setupELM(socket.inputStream, socket.outputStream)
+                    if (initialized) {
+                        obdJob?.cancel()
+                        obdJob = launch { pollRPM() }
+                        withContext(Dispatchers.Main) {
+                            btnConnectOBD.text = "Connected to OBD"
+                            btnConnectOBD.isEnabled = true
+                            Toast.makeText(
+                                this@MainActivity,
+                                "OBD Connected Successfully",
+                                Toast.LENGTH_SHORT
+                            ).show()
+                        }
+                    } else {
+                        btHelper.disconnect(socket)
+                        showObdInitFailed()
+                    }
+                } else {
+                    withContext(Dispatchers.Main) {
+                        showObdConnectFailed()
+                    }
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    showObdError(e)
+                }
+            }
+        }
+    }
+
     private suspend fun CoroutineScope.pollRPM() {
         while (isActive) {
             try {
                 val rpm = obdManager.readPID(0x0C)
                 withContext(Dispatchers.Main) {
-                    if (rpm > 0) {
-                        tvRPM.text = "RPM: $rpm"
-                        if (isTracking) {
-                            val intent = Intent(this@MainActivity, LocationService::class.java).apply {
-                                action = LocationService.ACTION_UPDATE_RPM
-                                putExtra(LocationService.EXTRA_RPM_VALUE, rpm)
-                            }
-                            startService(intent)
-                        }
-                    } else {
-                        tvRPM.text = "RPM: Waiting for data..."
+                    tvRPM.text = if (rpm > 0) "RPM: $rpm" else "RPM: Waiting for data..."
+                    if (isTracking && rpm > 0) {
+                        Intent(this@MainActivity, LocationService::class.java).apply {
+                            action = LocationService.ACTION_UPDATE_RPM
+                            putExtra(LocationService.EXTRA_RPM_VALUE, rpm)
+                        }.also { startService(it) }
                     }
                 }
             } catch (e: Exception) {
                 withContext(Dispatchers.Main) {
-                    tvRPM.text = "RPM: Error - ${'$'}{e.message}"
+                    tvRPM.text = "RPM: Error - ${e.message}"
                 }
             }
             delay(1000L)
@@ -281,26 +285,46 @@ class MainActivity : AppCompatActivity() {
         var currentSimRPM = 800
         while (isActive) {
             if (random.nextInt(10) == 0) trend = random.nextInt(3) - 1
-            when (trend) {
-                -1 -> currentSimRPM -= random.nextInt(100) + 50
-                0  -> currentSimRPM += random.nextInt(60) - 30
-                1  -> currentSimRPM += random.nextInt(150) + 50
+            currentSimRPM = when (trend) {
+                -1 -> (currentSimRPM - (random.nextInt(100) + 50)).coerceAtLeast(700)
+                1  -> (currentSimRPM + (random.nextInt(150) + 50)).coerceAtMost(6000)
+                else -> (currentSimRPM + (random.nextInt(60) - 30)).coerceIn(700, 6000)
             }
-            currentSimRPM = currentSimRPM.coerceIn(700, 6000)
             withContext(Dispatchers.Main) {
-                tvRPM.text = "RPM: $currentSimRPM${if (isSimulationMode) " (simulated)" else ""}"
+                tvRPM.text = "RPM: $currentSimRPM (simulated)"
                 if (isTracking) {
-                    val intent = Intent(this@MainActivity, LocationService::class.java).apply {
+                    Intent(this@MainActivity, LocationService::class.java).apply {
                         action = LocationService.ACTION_UPDATE_RPM
                         putExtra(LocationService.EXTRA_RPM_VALUE, currentSimRPM)
-                    }
-                    startService(intent)
+                    }.also { startService(it) }
                 }
             }
             delay(1000L)
         }
     }
 
+    private fun showObdInitFailed() = runOnUiThread {
+        btnConnectOBD.text = "Connect OBD"
+        btnConnectOBD.isEnabled = true
+        tvRPM.text = "RPM: Not connected"
+        Toast.makeText(this, "Failed to initialize OBD adapter", Toast.LENGTH_SHORT).show()
+    }
+
+    private fun showObdConnectFailed() = runOnUiThread {
+        btnConnectOBD.text = "Connect OBD"
+        btnConnectOBD.isEnabled = true
+        tvRPM.text = "RPM: Not connected"
+        Toast.makeText(this, "OBD Connection Failed", Toast.LENGTH_SHORT).show()
+    }
+
+    private fun showObdError(e: Exception) = runOnUiThread {
+        btnConnectOBD.text = "Connect OBD"
+        btnConnectOBD.isEnabled = true
+        tvRPM.text = "RPM: Error"
+        Toast.makeText(this, "Error: ${e.message}", Toast.LENGTH_SHORT).show()
+    }
+
+    // --- Permissions & Location Helpers (unchanged) ---
     private fun checkPermissions(): Boolean {
         val fine = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
         val coarse = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION)
@@ -341,19 +365,19 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun startLocationService() {
-        val intent = Intent(this, LocationService::class.java).apply {
+        Intent(this, LocationService::class.java).apply {
             action = LocationService.ACTION_START_LOCATION_SERVICE
+        }.also {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(it)
+            else startService(it)
         }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(intent)
-        else startService(intent)
         Toast.makeText(this, getString(R.string.rastreo_iniciado), Toast.LENGTH_SHORT).show()
     }
 
     private fun stopLocationService() {
-        val intent = Intent(this, LocationService::class.java).apply {
+        Intent(this, LocationService::class.java).apply {
             action = LocationService.ACTION_STOP_LOCATION_SERVICE
-        }
-        startService(intent)
+        }.also { startService(it) }
         Toast.makeText(this, getString(R.string.rastreo_finalizado), Toast.LENGTH_SHORT).show()
     }
 }
