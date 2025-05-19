@@ -86,13 +86,5 @@
         android:text="@string/rpm_label"
         android:textSize="18sp" />
 
-    <Switch
-        android:id="@+id/switchSimulation"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:text="Simulation Mode"
-        android:paddingVertical="8dp"
-        android:textSize="16sp" />
-
 </LinearLayout>
 
